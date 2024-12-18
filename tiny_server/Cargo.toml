@@ -1,0 +1,9 @@
+[package]
+name = "tiny_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+data_manip = {path = "./src/data_manip"}
+runtime = {path = "./src/runtime"}
+server_term ={ path = "./src/server_term"}
