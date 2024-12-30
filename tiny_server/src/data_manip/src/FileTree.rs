@@ -1,6 +1,11 @@
+use std::cell::RefCell;
 use std::fs::{self, Metadata};
 use std::path::Path;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::{HashMap, VecDeque};
+use std::slice::ChunkBy;
+use std::str::Split;
+use std::sync::Weak;
+use std::sync::Arc;
 
 enum FileBuildErr{
     IoErr(std::io::Error),
@@ -10,24 +15,31 @@ enum FileBuildErr{
     IsSymlink(String),
 }
 
+type NodeRef = Arc<RefCell<Node>>;
+type ParentRef = Option<Weak<RefCell<Node>>>;
+
 struct Node{
     name: String,
-    children: HashMap<String, Arc<Node>>,
-    parent: Option<Arc<Node>>,
+    children: HashMap<String, NodeRef>,
+    parent: ParentRef,
     is_file: bool,
     size: usize,
+    date_created: u64,
+    date_modified: u64,
+    
 }
 
 struct FileTree{
-    root: Arc<Node>,
-    full_path: Vec<String>,
-    current: Arc<Node>,
-    size: usize,
-
+    root: NodeRef,
+    /*
+        Possible future additions:
+        - Vec of noderefs sorted by recently added, stuff like that
+     */
 }
 
 impl Node{
     fn new(name: String, is_file: bool, size: usize) -> Node{
+
         Node{
             name,
             children: HashMap::new(),
@@ -37,19 +49,20 @@ impl Node{
         }
     }
 
-    fn add_child(&mut self, child: Node){
-        self.children.insert(child.name.clone(), Arc::new(child));
+    fn add_child(&mut self, child: NodeRef){
+        let borrowed_name = child.borrow().name.clone();
+        self.children.insert(borrowed_name, child);
     }
 
-    fn get_child(&self, name: &str) -> Option<Arc<Node>>{
+    fn get_child(&self, name: &str) -> Option<NodeRef>{
         self.children.get(name).cloned()
     }
 
-    fn get_children(&self) -> Vec<Arc<Node>>{
+    async fn get_children(&self) -> Vec<NodeRef>{
         self.children.values().map(|x| x.clone()).collect()
     }
 
-    fn from_file(path_str: &str, parent: Option<Arc<Node>>) -> Result<Node, FileBuildErr>{
+    fn root_from_file(path_str: &str, parent: ParentRef) -> Result<NodeRef, FileBuildErr>{
         let path = Path::new(path_str);
 
         let metadata = match path.metadata(){
@@ -67,74 +80,72 @@ impl Node{
         };
 
         let is_file = metadata.is_file();
+        let size = metadata.len();
+        let mut node = Node::new(name, is_file, size as usize);
+        node.parent = parent;
+        let node_ref = Arc::new(RefCell::new(node));
         if metadata.is_symlink(){
             return Err(FileBuildErr::IsSymlink(path_str.to_string()));
         }
-        let size = metadata.len() as usize;
+        
+        if !is_file{
+            let entries = match fs::read_dir(path){
+                Ok(entries) => entries,
+                Err(e) => return Err(FileBuildErr::IoErr(e)),
+            };
 
-        Ok(Node{
-            name,
-            children: HashMap::new(),
-            parent,
-            is_file,
-            size,
-        })
+            for entry in entries{
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => return Err(FileBuildErr::IoErr(e)),
+                };
+
+                let child_path = entry.path();
+                let child_path_str = child_path.to_str().unwrap_or("");
+                if child_path_str.is_empty() {
+                    continue;
+                }
+
+                let child_node = Node::root_from_file(child_path_str, Some(Arc::downgrade(&node_ref)))?;
+                node_ref.borrow_mut().add_child(child_node);
+
+            }
+        }
+
+        Ok(node_ref)
         
     }
 }
 
 impl FileTree{
-    fn check_metadata<T>(path: T) -> Result<Metadata, FileBuildErr>
-    where T: Into<String> + AsRef<Path>
-    {
-        let metadata = match fs::metadata(path.as_ref()){
-            Ok(meta) => meta,
-            Err(e) => match e.kind(){
-                std::io::ErrorKind::PermissionDenied => return Err(FileBuildErr::PermissionErr(path.into())),
-                std::io::ErrorKind::NotFound => return Err(FileBuildErr::NotFoundErr(path.into())),
-                _ => return Err(FileBuildErr::IoErr(e)),
-            },
-        };
-        if metadata.is_symlink(){
-            return Err(FileBuildErr::IsSymlink(path.into()));
-        }
-
-        if path.as_ref().file_name() == None{
-            return Err(FileBuildErr::InvalidPath(path.into()));
-        }   
-
-        Ok(metadata)
-    }
-    
-    pub fn from_root_dir(path: &str) -> Result<Self, FileBuildErr>{
-        let root = match Node::from_file(path, None){
-            Ok(node) => node,
-            Err(e) => return Err(e),
-        };
-        let root_dir = match fs::read_dir(path){
-            Ok(dir) => dir,
-            Err(e) => match e.kind(){
-                std::io::ErrorKind::NotFound => return Err(FileBuildErr::NotFoundErr(path.to_string())),
-                std::io::ErrorKind::PermissionDenied => return Err(FileBuildErr::PermissionErr(path.to_string())),
-                _ => return Err(FileBuildErr::IoErr(e)),
-                
+    async fn get_file(&self, path: &str) -> Option<NodeRef>{
+        let return_path = String::new();
+        let mut current = self.root.clone();
+        let path = path.trim().trim_start_matches('/');
+        let mut path_iter = path.split('/');
+        let mut next = path_iter.next();
+        while let Some(name) = next{
+            let child = current.borrow().get_child(name);
+            match child{
+                Some(child) => current = child,
+                None => return None,
             }
-        };
-
-        //BOOKMARK :)
-        for entry in root_dir{
-            let entry = match entry{
-                Ok(entry) => entry,
-                Err(e) => return Err(FileBuildErr::IoErr(e)),
-            };
-            let metadata = entry.metadata()
-            let name = entry.file_name().to_string_lossy().to_string();
-            
-
+            next = path_iter.next();
         }
-
-
-
+        Some(current)
 
     }
+
+    /// Returns none if node is file or if the path is invalid
+    async fn get_children(&self, path: &str) -> Option<Vec<NodeRef>>{
+        let node = self.get_file(path).await?;
+        if node.borrow().is_file{
+            return None;
+        }
+        let children = node.borrow().get_children().await;
+        Some(children)
+    }
+
+
+    
 }
