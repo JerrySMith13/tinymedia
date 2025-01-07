@@ -2,10 +2,9 @@ use std::cell::RefCell;
 use std::fs::{self, Metadata};
 use std::path::Path;
 use std::collections::{HashMap, VecDeque};
-use std::slice::ChunkBy;
-use std::str::Split;
 use std::sync::Weak;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 enum FileBuildErr{
     IoErr(std::io::Error),
@@ -26,28 +25,20 @@ struct Node{
     size: usize,
     date_created: u64,
     date_modified: u64,
+    views_by_week: [u32; 7],
+    likes: u32,
     
 }
 
 struct FileTree{
     root: NodeRef,
-    /*
-        Possible future additions:
-        - Vec of noderefs sorted by recently added, stuff like that
-     */
+    by_popularity: VecDeque<NodeRef>,
+    by_recency: VecDeque<NodeRef>,
+    
+
 }
 
 impl Node{
-    fn new(name: String, is_file: bool, size: usize) -> Node{
-
-        Node{
-            name,
-            children: HashMap::new(),
-            parent: None,
-            is_file,
-            size,
-        }
-    }
 
     fn add_child(&mut self, child: NodeRef){
         let borrowed_name = child.borrow().name.clone();
@@ -81,7 +72,18 @@ impl Node{
 
         let is_file = metadata.is_file();
         let size = metadata.len();
-        let mut node = Node::new(name, is_file, size as usize);
+        let date_created = metadata.created().unwrap().elapsed().unwrap().as_secs();
+        let mut node = Node{
+            name,
+            children: HashMap::new(),
+            parent: None,
+            is_file,
+            size: size as usize,
+            date_created,
+            date_modified: date_created,
+            views_by_week: [0; 7],
+            likes: 0,
+        };
         node.parent = parent;
         let node_ref = Arc::new(RefCell::new(node));
         if metadata.is_symlink(){
@@ -118,7 +120,7 @@ impl Node{
 }
 
 impl FileTree{
-    async fn get_file(&self, path: &str) -> Option<NodeRef>{
+    pub async fn get_file(&self, path: &str) -> Option<NodeRef>{
         let return_path = String::new();
         let mut current = self.root.clone();
         let path = path.trim().trim_start_matches('/');
@@ -146,6 +148,8 @@ impl FileTree{
         Some(children)
     }
 
-
+    pub async fn build_catalogue(node: NodeRef) -> Vec<NodeRef>{
+        Vec::new()
+    }
     
 }

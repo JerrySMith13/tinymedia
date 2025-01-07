@@ -150,14 +150,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime"
-version = "0.1.0"
-
-[[package]]
-name = "server_term"
-version = "0.1.0"
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -172,15 +164,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tiny_server"
-version = "0.1.0"
-dependencies = [
- "data_manip",
- "runtime",
- "server_term",
 ]
 
 [[package]]
